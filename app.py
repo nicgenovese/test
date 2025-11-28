@@ -253,15 +253,19 @@ Rebalances:           {m['Rebalances']}
 CONFIGURATION:
 Method:               {c['method'].replace('_', ' ').title()}
 Frequency:            {c['rebalance_freq'].title()}
-Top N Tokens:         {c['top_n']}
-BTC Cap:              {c['btc_cap']*100:.0f}%
-ETH Cap:              {c['eth_cap']*100:.0f}%
-BTC+ETH Combined:     {c['btc_eth_combined']*100:.0f}%
-Max Any Token:        {c['max_any']*100:.0f}%
-Min Weight:           {c['min_weight']*100:.1f}%
+Top N Tokens:         {c.get('top_n', 'N/A')}
 """
     
-    if c['method'] == 'manual' and c.get('manual_weights'):
+    # Only add cap settings for non-benchmark strategies
+    if c.get('method') != 'benchmark':
+        report += f"""BTC Cap:              {c.get('btc_cap', 1.0)*100:.0f}%
+ETH Cap:              {c.get('eth_cap', 1.0)*100:.0f}%
+BTC+ETH Combined:     {c.get('btc_eth_combined', 1.0)*100:.0f}%
+Max Any Token:        {c.get('max_any', 1.0)*100:.0f}%
+Min Weight:           {c.get('min_weight', 0.0)*100:.1f}%
+"""
+    
+    if c.get('method') == 'manual' and c.get('manual_weights'):
         report += "\nMANUAL WEIGHTS:\n"
         for token, weight in sorted(c['manual_weights'].items(), key=lambda x: x[1], reverse=True):
             report += f"{token:6s}  {weight:6.2f}%\n"
