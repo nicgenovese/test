@@ -176,21 +176,30 @@ def calculate_cci30_performance(cci30_data, start_date, end_date, initial):
 @st.cache_data
 def load_cci30_data():
     """Load CCI30 index data and convert to weekly"""
-    try:
-        df = pd.read_csv('cci30_OHLCV.csv')
-        df['Date'] = pd.to_datetime(df['Date'])
-        df = df.rename(columns={'Date': 'date', 'Close': 'close'})
-        df = df.sort_values('date')
-        
-        # Convert to weekly (match user data frequency)
-        df = df.set_index('date')
-        df_weekly = df['close'].resample('W-FRI').last().reset_index()
-        df_weekly = df_weekly.dropna()
-        
-        return df_weekly
-    except Exception as e:
-        st.warning(f"⚠️ CCI30 data not available: {e}")
-        return pd.DataFrame()
+    import os
+    
+    # Try different possible filenames
+    possible_names = ['cci30_OHLCV.csv', 'CCI30_OHLCV.csv', 'cci30_ohlcv.csv']
+    
+    for filename in possible_names:
+        try:
+            if os.path.exists(filename):
+                df = pd.read_csv(filename)
+                df['Date'] = pd.to_datetime(df['Date'])
+                df = df.rename(columns={'Date': 'date', 'Close': 'close'})
+                df = df.sort_values('date')
+                
+                # Convert to weekly (match user data frequency)
+                df = df.set_index('date')
+                df_weekly = df['close'].resample('W-FRI').last().reset_index()
+                df_weekly = df_weekly.dropna()
+                
+                return df_weekly
+        except Exception as e:
+            continue
+    
+    # If we get here, file not found with any name
+    return pd.DataFrame()
 
 def calculate_cci30_performance(cci30_data, start_date, end_date, initial):
     """Calculate CCI30 buy-and-hold performance"""
@@ -613,6 +622,11 @@ def main():
             st.sidebar.info("💡 Enable to compare vs CCI30")
     else:
         st.sidebar.warning("⚠️ CCI30 data not available")
+        # Debug: show what files we can see
+        import os
+        files = [f for f in os.listdir('.') if f.endswith('.csv')]
+        if files:
+            st.sidebar.caption(f"Files found: {', '.join(files)}")
         show_cci30 = False
     
     st.sidebar.markdown("---")
@@ -1125,4 +1139,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
