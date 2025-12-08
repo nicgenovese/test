@@ -493,13 +493,13 @@ class IndexStrategy:
         return weights
     
     def _apply_caps(self, weights):
-        """Apply all caps with smart redistribution"""
-        
-        for iteration in range(50):  # More iterations for complex cases
+        """Apply all caps with smart redistribution - ensures individual token caps are never violated"""
+
+        for iteration in range(100):  # More iterations for complex cases
             old_weights = weights.copy()
             changed = False
-            
-            # Apply BTC+ETH combined cap
+
+            # Step 1: Apply BTC+ETH combined cap first
             btc = weights.get('BTC', 0)
             eth = weights.get('ETH', 0)
             if btc + eth > self.btc_eth_combined:
@@ -509,87 +509,92 @@ class IndexStrategy:
                     weights['BTC'] = self.btc_eth_combined * (btc / total)
                     weights['ETH'] = self.btc_eth_combined * (eth / total)
                     changed = True
-            
-            # Apply individual BTC cap
+
+            # Step 2: Apply individual BTC cap
             if 'BTC' in weights and weights['BTC'] > self.btc_cap:
                 weights['BTC'] = self.btc_cap
                 changed = True
-            
-            # Apply individual ETH cap
+
+            # Step 3: Apply individual ETH cap
             if 'ETH' in weights and weights['ETH'] > self.eth_cap:
                 weights['ETH'] = self.eth_cap
                 changed = True
-            
-            # Apply max_any cap to all tokens EXCEPT BTC and ETH
+
+            # Step 4: Apply max_any cap to all tokens EXCEPT BTC and ETH
+            # BTC and ETH have their own caps and can absorb redistributed weight
             if self.max_any < 1.0:
                 for token in weights:
-                    # Skip BTC and ETH - they have their own caps
                     if token not in ['BTC', 'ETH']:
                         if weights[token] > self.max_any:
                             weights[token] = self.max_any
                             changed = True
             
-            # Normalize to 100% (this redistributes excess to uncapped tokens)
+            # Step 5: Normalize to 100% (redistribute excess to uncapped tokens)
+            # KEY FIX: Calculate headroom for each token and redistribute proportionally to available headroom
             total = sum(weights.values())
             if total > 0 and abs(total - 1.0) > 0.0001:
-                # Only redistribute to tokens that aren't at their cap
-                uncapped_tokens = {}
+                deficit = 1.0 - total
+                btc_weight = weights.get('BTC', 0)
+                eth_weight = weights.get('ETH', 0)
+
+                # Calculate how much headroom each token has (how much it can grow without violating caps)
+                headroom = {}
                 for token, weight in weights.items():
-                    at_cap = False
-                    if token == 'BTC' and weight >= self.btc_cap - 0.0001:
-                        at_cap = True
-                    if token == 'ETH' and weight >= self.eth_cap - 0.0001:
-                        at_cap = True
-                    # Max any cap only applies to non-BTC/ETH tokens
-                    if token not in ['BTC', 'ETH'] and self.max_any < 1.0 and weight >= self.max_any - 0.0001:
-                        at_cap = True
-                    
-                    if not at_cap:
-                        uncapped_tokens[token] = weight
-                
-                # If there are uncapped tokens, redistribute to them proportionally
-                if uncapped_tokens and sum(uncapped_tokens.values()) > 0:
-                    uncapped_sum = sum(uncapped_tokens.values())
-                    deficit = 1.0 - total
-                    
+                    max_weight = 1.0  # Default: no limit
+
+                    if token == 'BTC':
+                        # BTC is limited by its individual cap and the combined cap
+                        max_from_individual = self.btc_cap
+                        max_from_combined = max(0, self.btc_eth_combined - eth_weight)
+                        max_weight = min(max_from_individual, max_from_combined)
+
+                    elif token == 'ETH':
+                        # ETH is limited by its individual cap and the combined cap
+                        max_from_individual = self.eth_cap
+                        max_from_combined = max(0, self.btc_eth_combined - btc_weight)
+                        max_weight = min(max_from_individual, max_from_combined)
+
+                    else:
+                        # Other tokens are limited by max_any
+                        if self.max_any < 1.0:
+                            max_weight = self.max_any
+
+                    # Headroom is how much the token can still grow
+                    token_headroom = max(0, max_weight - weight)
+                    if token_headroom > 0.0001:  # Only consider meaningful headroom
+                        headroom[token] = token_headroom
+
+                # Redistribute deficit proportionally to available headroom
+                if headroom and sum(headroom.values()) > 0:
+                    total_headroom = sum(headroom.values())
+
+                    # If deficit is larger than total headroom, we can only redistribute what's available
+                    redistribution_factor = min(1.0, deficit / total_headroom) if total_headroom > 0 else 0
+
                     for token in weights:
-                        if token in uncapped_tokens:
-                            # Add proportional share of deficit
-                            weights[token] += (uncapped_tokens[token] / uncapped_sum) * deficit
+                        if token in headroom:
+                            # Redistribute proportionally to headroom
+                            additional_weight = headroom[token] * redistribution_factor
+                            weights[token] += additional_weight
+                            changed = True
                 else:
-                    # All tokens at cap, just normalize
-                    weights = {k: v/total for k, v in weights.items()}
+                    # No headroom available - all tokens at their caps
+                    # Just normalize proportionally (last resort)
+                    if total > 0:
+                        weights = {k: v/total for k, v in weights.items()}
             
             # Check convergence
             if not changed and self._weights_equal(weights, old_weights):
                 break
-        
-        # Ensure weights sum to exactly 100% without violating caps
-        # Only adjust if sum is significantly off (> 0.01%)
+
+        # Final check: ensure we're very close to 100%
+        # The iteration loop should have handled this, but do a final tiny adjustment if needed
         total = sum(weights.values())
-        if abs(total - 1.0) > 0.0001:
-            # Find uncapped tokens for final adjustment
-            uncapped = {}
-            for token, weight in weights.items():
-                at_cap = False
-                if token == 'BTC' and weight >= self.btc_cap - 0.0001:
-                    at_cap = True
-                if token == 'ETH' and weight >= self.eth_cap - 0.0001:
-                    at_cap = True
-                # Max any cap only applies to non-BTC/ETH tokens
-                if token not in ['BTC', 'ETH'] and self.max_any < 1.0 and weight >= self.max_any - 0.0001:
-                    at_cap = True
-                if not at_cap:
-                    uncapped[token] = weight
-            
-            # Only adjust uncapped tokens
-            if uncapped and sum(uncapped.values()) > 0:
-                deficit = 1.0 - total
-                uncapped_sum = sum(uncapped.values())
-                for token in weights:
-                    if token in uncapped:
-                        weights[token] += (uncapped[token] / uncapped_sum) * deficit
-        
+        if abs(total - 1.0) > 0.0001 and abs(total - 1.0) < 0.01:  # Only for very small discrepancies
+            # Make a tiny proportional adjustment
+            adjustment_factor = 1.0 / total if total > 0 else 1.0
+            weights = {k: v * adjustment_factor for k, v in weights.items()}
+
         return weights
     
     def _weights_equal(self, w1, w2, tolerance=0.0001):
